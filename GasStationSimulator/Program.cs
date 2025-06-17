@@ -6,7 +6,7 @@ using Timer = System.Timers.Timer;
 internal class Program
 {
     private static int totalFuel = 15000;
-    private static SemaphoreSlim stationSemaphore = new(10,10);
+    private static SemaphoreSlim stationSemaphore = new(10, 10);
 
     private static bool isFuelDepleted = false;
     private static bool isTimeoutReached = false;
@@ -15,7 +15,6 @@ internal class Program
     private static Timer spawnTimer = new();
 
     private static object printLock = new object();
-
     private static object fuelLock = new object();
 
     private static Random random = new Random();
@@ -25,17 +24,19 @@ internal class Program
 
     public static void Main()
     {
+        // Initialize and start the station timeout timer
         stationTimer.Interval = 5000;
         stationTimer.Elapsed += GasStationTimeoutTimerElapsed;
         stationTimer.AutoReset = false;
         stationTimer.Start();
 
+        // Start vehicle spawning timer
         spawnTimer.Elapsed += VehiclesCreationTimerElapsed;
         spawnTimer.Start();
 
         PrintWithLock($"total fuel: {totalFuel}");
 
-        // Wait for station to close
+        // Wait until the station closes and all vehicles have left
         while (!isTimeoutReached || stationSemaphore.CurrentCount < 10)
         {
             Thread.Sleep(100);
@@ -43,7 +44,7 @@ internal class Program
 
         PrintWithLock($"Vehicles count: {vehicleCount}");
 
-        // Clean up
+        // Release resources
         stationTimer?.Dispose();
         spawnTimer?.Dispose();
         stationSemaphore?.Dispose();
@@ -52,13 +53,14 @@ internal class Program
         Console.ReadKey();
     }
 
+    // Called when the station timeout timer elapses
     static void GasStationTimeoutTimerElapsed(object? sender, ElapsedEventArgs e)
     {
         lock (fuelLock)
         {
             if (isFuelDepleted)
             {
-                // If fuel already depleted, ignore timeout
+                // Fuel already depleted; skip closing due to timeout
                 return;
             }
 
@@ -69,13 +71,14 @@ internal class Program
         }
     }
 
+    // Called when fuel reaches zero
     static void FuelDepleted()
     {
         lock (fuelLock)
         {
             if (isTimeoutReached && !isFuelDepleted)
             {
-                // Timeout happened first, but now fuel is depleted
+                // Timeout already occurred; now also depleting fuel
                 PrintWithLock("Gas station closing: Fuel depleted");
                 isFuelDepleted = true;
                 shutdownTokenSource.Cancel();
@@ -94,6 +97,7 @@ internal class Program
         }
     }
 
+    // Execution logic for each vehicle thread
     static void VehicleProc(object? obj)
     {
         Vehicle vehicle = (Vehicle)obj;
@@ -106,12 +110,11 @@ internal class Program
 
         try
         {
-            // Try to enter the gas station
             bool enteredStation = false;
 
             try
             {
-                // Wait for semaphore with cancellation token
+                // Attempt to enter the gas station (acquire semaphore)
                 stationSemaphore.Wait(vehicle.CancellationToken);
                 enteredStation = true;
 
@@ -121,7 +124,7 @@ internal class Program
                     return;
                 }
 
-                // Check if station is closed due to fuel depletion
+                // Check if fuel is already depleted
                 lock (fuelLock)
                 {
                     if (isFuelDepleted)
@@ -133,15 +136,13 @@ internal class Program
 
                 PrintWithLock($"Vehicle {vehicle.Id} entered the gas station");
 
-                // Simulate fueling time
+                // Simulate time taken to refuel
                 Thread.Sleep(random.Next(100, 500));
 
-                // Try to fuel
                 lock (fuelLock)
                 {
                     if (isFuelDepleted)
                     {
-                        // Fuel depleted while waiting, just leave
                         PrintWithLock($"Vehicle {vehicle.Id} leaved the gas station");
                         return;
                     }
@@ -172,7 +173,6 @@ internal class Program
                 }
                 else
                 {
-                    // If already in station, still need to leave
                     PrintWithLock($"Vehicle {vehicle.Id} leaved the gas station");
                 }
             }
@@ -190,15 +190,17 @@ internal class Program
         }
     }
 
+    // Sets a new random interval for vehicle creation
     static void VehiclesCreationTimerRearm(object? sender, ElapsedEventArgs e)
     {
         if (!isTimeoutReached)
         {
-            spawnTimer.Interval = random.Next(5, 26); // 5-25 milliseconds
+            spawnTimer.Interval = random.Next(5, 26);
         }
     }
 
-        static void VehiclesCreationTimerElapsed(object? sender, ElapsedEventArgs e)
+    // Called when it's time to spawn a new vehicle
+    static void VehiclesCreationTimerElapsed(object? sender, ElapsedEventArgs e)
     {
         if (isTimeoutReached)
         {
@@ -206,21 +208,21 @@ internal class Program
             return;
         }
 
-        // Create new vehicle
         Vehicle vehicle = new Vehicle(shutdownTokenSource.Token);
         Interlocked.Increment(ref vehicleCount);
 
         PrintWithLock($"Vehicle {vehicle.Id} created");
 
-        // Start vehicle thread
-        Thread vehicleThread = new Thread(VehicleProc);
-        vehicleThread.IsBackground = true;
+        Thread vehicleThread = new Thread(VehicleProc)
+        {
+            IsBackground = true
+        };
         vehicleThread.Start(vehicle);
 
-        // Rearm timer for next vehicle
         VehiclesCreationTimerRearm(null, null);
     }
 
+    // Ensures thread-safe printing to console
     static void PrintWithLock(string str)
     {
         lock (printLock)
